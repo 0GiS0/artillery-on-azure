@@ -1,0 +1,105 @@
+name: 2. Deploy Logic App and API Connections
+on:
+  push:
+    branches:
+      - main
+    paths:
+      ["logic-app/**", "tf-logic-app/**", ".github/workflows/logic-app.yml"]
+  workflow_dispatch:
+
+env:
+  TF_CONNECTIONS_WORK_DIR: ./tf-logic-app/api-connections
+  TF_WORKFLOW_WORK_DIR: ./tf-logic-app/workflow
+
+jobs:
+  logic_app_connections:
+    name: API Connections
+    runs-on: ubuntu-latest
+    env:
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_ACCESS_KEY: ${{ secrets.ARM_ACCESS_KEY }}
+    outputs:
+      resource_group: ${{ steps.tf_output.outputs.resourcegroup }}
+      eventgrid_name: ${{ steps.tf_output.outputs.eventgrid }}
+      # event_grid_link: "https://portal.azure.com/#@${{ secrets.AZUREAD_DOMAIN }}/resource/subscriptions/${{ secrets.ARM_SUBSCRIPTION_ID }}/resourceGroups/${{ steps.tf_output.outputs.resourcegroup }}/providers/Microsoft.Web/connections/${{ steps.tf_output.outputs.eventgrid }}/edit"
+      event_grid_link: "https://portal.azure.com"
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v2
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v1
+        with:
+          terraform_wrapper: false #We need this to get the output
+      - name: Terraform Init
+        run: terraform init --backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_NAME }}" --backend-config="container_name=${{ secrets.TF_STATE_CONTAINER_NAME }}" -backend-config="key=api-connections.tfstate"
+        working-directory: ${{ env.TF_CONNECTIONS_WORK_DIR }}
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: ${{ env.TF_CONNECTIONS_WORK_DIR }}
+      - name: Terraform plan
+        run: terraform plan
+        working-directory: ${{ env.TF_CONNECTIONS_WORK_DIR }}
+      - name: Terraform Apply
+        run: terraform apply -var="azuread_domain=${{ secrets.AZUREAD_DOMAIN }}" -auto-approve
+        working-directory: ${{ env.TF_CONNECTIONS_WORK_DIR }}
+      - name: Get outputs from Terraform
+        id: tf_output
+        working-directory: ${{ env.TF_CONNECTIONS_WORK_DIR }}
+        run: |
+          echo "::set-output name=resourcegroup::$(terraform output -raw resource_group_name)"
+          echo "::set-output name=eventgrid::$(terraform output -raw eventgrid_connection_name)"
+  eventgrid_authorization:
+    needs: logic_app_connections
+    name: Event Grid Authorization Needed
+    runs-on: ubuntu-latest
+    environment:
+      name: api_connections
+      url: http://portal.azure.com
+    steps:
+      - name: Event Grid Authorization Done
+        run: echo  ${{ needs.logic_app_connections.outputs.event_grid }}
+  office365_authorization:
+    needs: eventgrid_authorization
+    name: Office365 Authorization Needed
+    runs-on: ubuntu-latest
+    environment:
+      name: api_connections
+      url: https://portal.azure.com
+    steps:
+      - name: Office 365 Authorization Done
+        run: echo hello
+  logic_app_workflow:
+    needs: [eventgrid_authorization, office365_authorization]
+    name: Logic App Workflow
+    runs-on: ubuntu-latest
+    environment:
+      name: apiconn_auth
+      url: logic_app_connections
+    env:
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_ACCESS_KEY: ${{ secrets.ARM_ACCESS_KEY }}
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v2
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v1
+        with:
+          terraform_wrapper: false #We need this to get the output
+      - name: Terraform Init
+        run: terraform init --backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_NAME }}" --backend-config="container_name=${{ secrets.TF_STATE_CONTAINER_NAME }}" -backend-config="key=logicapp.tfstate"
+        working-directory: ${{ env.TF_WORKFLOW_WORK_DIR }}
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: ${{ env.TF_WORKFLOW_WORK_DIR }}
+      - name: Terraform plan
+        run: terraform plan -var="access_key=${{ secrets.ARM_ACCESS_KEY }}"
+        working-directory: ${{ env.TF_WORKFLOW_WORK_DIR }}
+      - name: Terraform Apply
+        run: terraform apply -var="access_key=${{ secrets.ARM_ACCESS_KEY }}" -auto-approve
+        working-directory: ${{ env.TF_WORKFLOW_WORK_DIR }}

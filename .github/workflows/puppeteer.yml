@@ -1,0 +1,80 @@
+name: 1. Deploy Puppeteer on Azure Functions
+on:
+  push:
+    branches:
+      - main
+    paths:
+      [
+        "puppeteer-func/**",
+        "tf-puppeteer/**",
+        ".github/workflows/puppeteer.yml",
+      ]
+  workflow_dispatch:
+
+jobs:
+  terraform:
+    name: Terraform
+    runs-on: ubuntu-latest
+    env:
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_ACCESS_KEY: ${{ secrets.ARM_ACCESS_KEY }}
+    outputs:
+      service_name: ${{ steps.tf_output.outputs.servicename }}
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v2
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v1
+        with:
+          terraform_wrapper: false #We need this to get the output
+      - name: Terraform Init
+        run: terraform init --backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_NAME }}" --backend-config="container_name=${{ secrets.TF_STATE_CONTAINER_NAME }}" -backend-config="key=puppeteer.tfstate"
+        working-directory: ./tf-puppeteer
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: ./tf-puppeteer
+      - name: Terraform plan
+        run: terraform plan
+        working-directory: ./tf-puppeteer
+      - name: Terraform Apply
+        run: terraform apply -auto-approve
+        working-directory: ./tf-puppeteer
+      - name: Get outputs from Terraform
+        id: tf_output
+        working-directory: ./tf-puppeteer
+        run: |
+          echo "::set-output name=servicename::$(terraform output -raw azure_function_name)"
+  deploy_code:
+    needs: terraform
+    name: Deploy code
+    runs-on: ubuntu-latest
+    env:
+      AZURE_FUNCTIONAPP_PACKAGE_PATH: "./puppeteer-func"
+      NODE_VERSION: "14.x"
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v2
+      - name: Setup Node ${{ env.NODE_VERSION }} Environment
+        uses: actions/setup-node@v1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: "Resolve Project Dependencies Using Npm"
+        shell: bash
+        run: |
+          pushd './${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}'
+          npm install
+          npm run build --if-present
+          npm run test --if-present
+          popd
+      - uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: "Run Azure Functions Action"
+        uses: Azure/functions-action@v1
+        id: fa
+        with:
+          app-name: ${{ needs.terraform.outputs.service_name }}
+          package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}

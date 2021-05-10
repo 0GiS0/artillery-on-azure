@@ -1,0 +1,213 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "office365_connection_name": {
+            "type": "String"
+        },
+        "event_grid_connection_name": {
+            "type": "String"
+        },
+        "workflow_name": {
+            "type": "String"
+        },
+        "workflow_location": {
+            "type": "String"
+        },
+        "api_connections_location": {
+            "type": "String"
+        },
+        "storage_account_id": {
+            "type": "String"
+        },
+        "puppeteer_resource_group": {
+            "type": "String"
+        },
+        "puppeteer_website_name": {
+            "type": "String"
+        },
+        "api_connection_resource_group": {
+            "type": "String"
+        },
+        "storage_static_website_url": {
+            "type": "String"
+        },
+        "recipients": {
+            "type": "String"
+        }
+    },
+    "variables": {
+        "sites_puppeter_externalid": "[ concat(subscription().id,'/resourceGroups/',parameters('puppeteer_resource_group'),'/providers/Microsoft.Web/sites/',parameters('puppeteer_website_name')) ]",
+        "connections_azureeventgrid_externalid": "[ concat(subscription().id,'/resourceGroups/',parameters('api_connection_resource_group'),'/providers/Microsoft.Web/connections/azureeventgrid') ]",
+        "connections_office365_externalid": "[ concat(subscription().id,'/resourceGroups/',parameters('api_connection_resource_group'),'/providers/Microsoft.Web/connections/office365') ]"
+    },
+    "resources": [
+        {
+            "type": "Microsoft.Logic/workflows",
+            "apiVersion": "2017-07-01",
+            "name": "[parameters('workflow_name')]",
+            "location": "[parameters('workflow_location')]",
+            "properties": {
+                "state": "Enabled",
+                "definition": {
+                    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+                    "contentVersion": "1.0.0.0",
+                    "parameters": {
+                        "$connections": {
+                            "defaultValue": {},
+                            "type": "Object"
+                        }
+                    },
+                    "triggers": {
+                        "When_a_new_report_is_available": {
+                            "splitOn": "@triggerBody()",
+                            "type": "ApiConnectionWebhook",
+                            "inputs": {
+                                "body": {
+                                    "properties": {
+                                        "destination": {
+                                            "endpointType": "webhook",
+                                            "properties": {
+                                                "endpointUrl": "@{listCallbackUrl()}"
+                                            }
+                                        },
+                                        "filter": {
+                                            "includedEventTypes": [
+                                                "Microsoft.Storage.BlobCreated"
+                                            ],
+                                            "subjectBeginsWith": "/blobServices/default/containers/$web"
+                                        },
+                                        "topic": "[parameters('storage_account_id')]"
+                                    }
+                                },
+                                "host": {
+                                    "connection": {
+                                        "name": "@parameters('$connections')['azureeventgrid']['connectionId']"
+                                    }
+                                },
+                                "path": "[concat(subscription().id,'/providers/Microsoft.Storage.StorageAccounts/resource/eventSubscriptions')]",
+
+                                "queries": {
+                                    "x-ms-api-version": "2017-09-15-preview"
+                                }
+                            }
+                        }
+                    },
+                    "actions": {
+                        "Build_the_HTML_for_the_email": {
+                            "runAfter": {
+                                "Use_Puppeter_to_get_a_screenshot": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "base64image",
+                                        "type": "string",
+                                        "value": "<!DOCTYPE html>\n<html lang=\"en\">\n<body>\n    <h1>Artillery report is ready<h1>\n   <p><a href=\"@{variables('url')}\">More info here.</a></p>\n    <div>\n        <img src=\"@{body('Use_Puppeter_to_get_a_screenshot')}\" />\n    </div>\n</body>\n</html>"
+                                    }
+                                ]
+                            }
+                        },
+                        "The_static_web_site_URL": {
+                            "runAfter": {
+                                "Get_the_name_of_the_blob": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "static_website_url",
+                                        "type": "string",
+                                        "value": "[parameters('storage_static_website_url')]"
+                                    }
+                                ]
+                            }
+                        },
+                        "Build_the_static_web_site_URL": {
+                            "runAfter": {
+                                "The_static_web_site_URL": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "url",
+                                        "type": "string",
+                                        "value": "@{variables('static_website_url')}@{outputs('Get_the_name_of_the_blob')}"
+                                    }
+                                ]
+                            }
+                        },
+                        "Get_the_name_of_the_blob": {
+                            "runAfter": {},
+                            "type": "Compose",
+                            "inputs": "@split(triggerBody()?['subject'], '/')?[6]"
+                        },
+                        "Send_an_email_with_the_Artillery_report": {
+                            "runAfter": {
+                                "Build_the_HTML_for_the_email": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "ApiConnection",
+                            "inputs": {
+                                "body": {
+                                    "Body": "<p>@{variables('base64image')}</p>",
+                                    "Subject": "@{outputs('Get_the_name_of_the_blob')}",
+                                    "To": "[parameters('recipients')]"
+                                },
+                                "host": {
+                                    "connection": {
+                                        "name": "@parameters('$connections')['office365']['connectionId']"
+                                    }
+                                },
+                                "method": "post",
+                                "path": "/v2/Mail"
+                            }
+                        },
+                        "Use_Puppeter_to_get_a_screenshot": {
+                            "runAfter": {
+                                "Build_the_static_web_site_URL": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Function",
+                            "inputs": {
+                                "body": {
+                                    "url": "@variables('url')"
+                                },
+                                "function": {
+                                    "id": "[concat(variables('sites_puppeter_externalid'), '/functions/screenshot')]"
+                                }
+                            }
+                        }
+                    },
+                    "outputs": {}
+                },
+                "parameters": {
+                    "$connections": {
+                        "value": {
+                            "azureeventgrid": {
+                                "connectionId": "[variables('connections_azureeventgrid_externalid')]",
+                                "connectionName": "azureeventgrid",
+                                "id": "[concat(subscription().id,'/providers/Microsoft.Web/locations/', parameters('api_connections_location') ,'/managedApis/', parameters('event_grid_connection_name'))]"
+                            },
+                            "office365": {
+                                "connectionId": "[variables('connections_office365_externalid')]",
+                                "connectionName": "office365",
+                                "id": "[concat(subscription().id,'/providers/Microsoft.Web/locations/',parameters('api_connections_location'),'/managedApis/', parameters('office365_connection_name'))]"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    ]
+}

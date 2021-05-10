@@ -1,0 +1,70 @@
+name: 3. Artillery scheduled
+on:
+  push:
+    branches:
+      - main
+    paths:
+      ["artillery/**", "tf-artillery/**", ".github/workflows/artillery-scheduled.yml","tests/**"]
+  workflow_dispatch:
+  schedule:
+    - cron: "5 0 * * *"
+
+env:
+  IMAGE_NAME: artillery-on-azure
+  TF_WORK_DIR: ./tf-artillery
+
+jobs:
+  build_and_push_to_registry:
+    name: Build and push Docker image with Artillery
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v2
+      - name: Login to GitHub Packages
+        uses: docker/login-action@v1
+        with:
+          registry: docker.pkg.github.com
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Lowercase repository name
+        run: |
+          echo "REPO=${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
+      - name: Short the sha to 7 characters only
+        id: vars
+        run: echo ::set-output name=tag::$(echo ${GITHUB_SHA::7})
+      - name: Build and push to GitHub Packages
+        uses: docker/build-push-action@v2
+        with:
+          context: ./artillery
+          file: ./artillery/Dockerfile
+          push: true
+          tags: docker.pkg.github.com/${{ env.REPO }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
+  terraform:
+    needs: build_and_push_to_registry
+    name: Create infrastructure on Microsoft Azure with Terraform
+    runs-on: ubuntu-latest
+    env:
+      ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+      ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+      ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+      ARM_ACCESS_KEY: ${{ secrets.ARM_ACCESS_KEY }}
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v2
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v1
+        with:
+          terraform_wrapper: false #We need this to get the output
+      - name: Terraform Init
+        run: terraform init --backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_NAME }}" --backend-config="container_name=${{ secrets.TF_STATE_CONTAINER_NAME }}" -backend-config="key=artillery-on-azure.tfstate"
+        working-directory: ${{ env.TF_WORK_DIR }}
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: ${{ env.TF_WORK_DIR }}
+      - name: Terraform plan
+        run: terraform plan
+        working-directory: ${{ env.TF_WORK_DIR }}
+      - name: Terraform Apply
+        run: terraform apply -auto-approve
+        working-directory: ${{ env.TF_WORK_DIR }}
