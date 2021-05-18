@@ -6,8 +6,8 @@ on:
     paths:
       ["artillery/**", "tf-artillery/**", ".github/workflows/artillery-scheduled.yml","tests/**"]
   workflow_dispatch:
-  schedule:
-    - cron: "5 0 * * *"
+  #schedule:
+   # - cron: "5 0 * * *"
 
 env:
   IMAGE_NAME: artillery-on-azure
