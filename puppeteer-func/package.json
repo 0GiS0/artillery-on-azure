@@ -7,6 +7,6 @@
     "test": "echo \"No tests yet...\""
   },
   "dependencies": {
-    "puppeteer": "^8.0.0"
+    "puppeteer": "^24.37.5"
   }
 }
